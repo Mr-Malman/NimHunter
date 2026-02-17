@@ -1,0 +1,6 @@
+# Nim cache directory
+nimcache/
+
+# Generated binary
+nimhunter
+nimhunter.exe
