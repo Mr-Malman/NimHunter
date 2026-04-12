@@ -1,5 +1,5 @@
 # Package
-version       = "0.1.0"
+version       = "2.0.0"
 author        = "Arya"
 description   = "Nim-based detection tool"
 license       = "MIT"
@@ -8,6 +8,6 @@ bin           = @["nimhunter"]
 
 # Dependencies
 requires "nim >= 2.0.0"
-# requires "peni"
-requires "https://github.com/dmknght/nimyara"
-requires "capstone"
+# Future: requires "https://github.com/dmknght/nimyara"  # native YARA bindings (not yet wired)
+# Future: requires "capstone"                             # disassembly (not yet wired)
+# Future: requires "peni"                                 # PE inspection helper
