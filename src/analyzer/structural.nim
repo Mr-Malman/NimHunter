@@ -32,6 +32,8 @@ type
     arcHooks*:           DetectionComponent  ## max 10
     foreignThreadGC*:    DetectionComponent  ## max 15
     callDensity*:        DetectionComponent  ## max 5
+    ## Layer 3: Behavioral (Libraries)
+    offensiveLibs*:      DetectionComponent  ## max 10
     ## Summary
     gcMode*:             GCMode
     totalScore*:         int    ## 0-100 (structural + behavioral, YARA added by caller)
@@ -324,6 +326,33 @@ proc detectCallDensity(buf: string): DetectionComponent =
 
   result.score = min(result.score, result.maxScore)
 
+# ─── Component 10: Offensive Library Artifacts ──────────────────────────────
+
+proc detectOffensiveLibraries*(buf: string): DetectionComponent =
+  ## Identifies known offensive libraries referenced via mangled names in the binary.
+  ## Aligns with Layer 3 (Behavioral) of the paper, distinguishing malicious Nim.
+  result = makeComp("Offensive Libraries", 10)
+
+  let offensiveLibs = [
+    ("@mwinim",       "Winim: Windows API wrapper (often used for payload injection)"),
+    ("@mnimprotect",  "NimProtect: String encryption library"),
+    ("@mstrenc",      "strenc: String obfuscation library"),
+    ("@msyscall",     "syscall: Direct syscall library (NTAPI/EDR bypass)"),
+    ("@mptr_math",    "ptr_math: Raw pointer arithmetic (shellcode execution patterns)"),
+    ("@mchronicles",  "chronicles: Structured logging (frequent in C2 frameworks)"),
+    ("stNiMsYscALls", "NimSyscalls: Another syscall execution framework")
+  ]
+
+  for (tag, desc) in offensiveLibs:
+    if hasStr(buf, tag):
+      result.score += 5
+      result.findings.add("Offensive library detected: " & tag & " — " & desc)
+
+  if result.score > 0:
+    result.findings.add("[HIGH] Presence of offensive Nim libraries highly correlates with malicious intent")
+  
+  result.score = min(result.score, result.maxScore)
+
 # ─── GC Mode Discriminator ───────────────────────────────────────────────────
 
 proc discriminateGCMode*(buf: string): GCMode =
@@ -370,7 +399,7 @@ proc buildFeatureVector*(res: DetectionResult, peInfo: PEInfo): seq[float] =
 proc analyzeCallCascade*(buffer: seq[byte], entryPoint: uint32,
                          peInfo: PEInfo): DetectionResult =
   ## Primary structural analysis entry point.
-  ## Runs all 9 detection components and produces a structured result.
+  ## Runs all 10 detection components and produces a structured result.
   var res = DetectionResult()
   let buf = cast[string](buffer)
 
@@ -383,6 +412,7 @@ proc analyzeCallCascade*(buffer: seq[byte], entryPoint: uint32,
   res.arcHooks           = detectARCHooks(buf)
   res.foreignThreadGC    = detectForeignThreadGC(buf)
   res.callDensity        = detectCallDensity(buf)
+  res.offensiveLibs      = detectOffensiveLibraries(buf)
   res.gcMode             = discriminateGCMode(buf)
 
   res.totalScore =
@@ -394,17 +424,20 @@ proc analyzeCallCascade*(buffer: seq[byte], entryPoint: uint32,
     res.orcTricolorMotif.score   +
     res.arcHooks.score           +
     res.foreignThreadGC.score    +
-    res.callDensity.score
+    res.callDensity.score        +
+    res.offensiveLibs.score
 
   res.totalScore = min(res.totalScore, 75) # YARA layer adds up to 25 more
 
   for c in [res.nimMainHierarchy, res.gcMarkerClustering, res.moduleEncoding,
             res.tmStrings, res.sysFatalRefs, res.orcTricolorMotif,
-            res.arcHooks, res.foreignThreadGC, res.callDensity]:
+            res.arcHooks, res.foreignThreadGC, res.callDensity,
+            res.offensiveLibs]:
     for f in c.findings:
       res.allFindings.add(f)
 
   res.featureVector = buildFeatureVector(res, peInfo)
+  res.featureVector.add(float(res.offensiveLibs.score) / float(res.offensiveLibs.maxScore))
   return res
 
 ## Backward-compatible shim (original 2-arg signature)
