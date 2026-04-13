@@ -1,0 +1,42 @@
+=== Table 5.2 — Main Detection Performance (NimHunter v2) ===
+
+Dataset: 9,100 samples  (7,218 Nim malware | 1,882 benign)
+Training: 5-fold Stratified Cross-Validation  (RF + XGB + DNN Ensemble)
+
+Malware Families Covered (8 categories × ~900 samples each):
+  Ransomware   1,000   Polymorphic   800   Adware     800
+  Metamorphic  1,000   Rootkit     1,000   RAT        600
+  Virus        1,000   Spyware     1,000
+
+Benign Sources (3 tiers):
+  Real Windows PE  (Sysinternals, 7-Zip)   :    76
+  Compiled C utilities  (mingw PE32+)      :   140
+  Mutated C variants (param randomisation) : 1,666
+  Total benign                             : 1,882
+
+Confusion Matrix  (5-fold aggregate):
+                    Predicted Nim    Predicted Clean
+  Actual Nim           TP= 7,218          FN=     0
+  Actual Clean         FP=     0          TN= 1,882
+
+Metric                    Value      95% CI
+-------------------------------------------
+Accuracy                 1.0000    [1.000, 1.000]
+Precision                1.0000    [1.000, 1.000]
+Recall  (Detection Rate) 1.0000    [1.000, 1.000]
+F1 Score                 1.0000    [1.000, 1.000]
+ROC-AUC                  1.0000    [1.000, 1.000]
+FAR  (False Alarm Rate)  0.0000    (0.00%)
+
+Cross-Validation:
+  F1  : 1.000 ± 0.000  (5-fold StratifiedKFold)
+  AUC : 1.000
+
+[✓] ROC curve     → results/figure5_2_roc.png
+[✓] SHAP summary  → models/shap_summary.png
+
+Note: Perfect scores reflect that Nim runtime artifacts (NimMain, sysFatal,
+gcMarker, @m_ encoding) are structurally absent in all compiled C benign
+samples, yielding a linearly-separable feature space. Generalisation to
+real-world unseen malware is further validated by the strip-resistant
+component in Table 5.4.

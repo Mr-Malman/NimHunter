@@ -1,0 +1,98 @@
+=== Table 5.6 — Deep Analysis: Strip-Resistant Detection (GIN+BERT+ACD) ===
+Shows how Layer 5 (deep) confirms detection independently of symbol tables
+Dataset retrained on: 9,100 samples (7,218 malware | 1,882 benign)
+
+WHY THIS MATTERS:
+  -d:strip removes the symbol table → NimMain symbols disappear (score drops to ~22)
+  Without strip-resistant detection these 3 variants were MISSED in NimHunter v1.
+  NimHunter v2 catches them via TWO independent mechanisms:
+    (A) Strip-Resistant Structural: raw .rdata scan for Nim stdlib path strings
+    (B) Layer 5 Deep Analysis:      GIN CFG patterns + BERT byte model + ACD anomaly
+
+────────────────────────────────────────────────────────────────────────────────
+
+--- mut_arc_strip.exe  (gc:arc + -d:strip) ---
+  Strip-Resistant hits  : 8  (IndexDefect, fatal.nim, system.nim, IOError,
+                              syncio.nim, OverflowDefect, SIGSEGV, cmdline.nim)
+  YARA/Structural score : 35/100  (threshold=40 → SUSPICIOUS)
+  LAYER 5 — Deep Analysis:
+    CFG nodes           : 1,310
+    GIN  (CFG graph)    : 5/15   [ORC GC back-edge loop]
+    BERT (next-byte LM) : 9/10   [Nim compiler byte signature]
+    ACD  (anomaly)      : 5/5    [ACD=22,026,166  vs benign mean]
+    LIME explanation    : NimMain hierarchy | Call density | Entropy
+    DEEP SCORE          : 19/30
+    COMBINED SCORE      : 54/100  ✅ DETECTED  (threshold=40)
+  Verdict               : SUSPICIOUS NIM ARTIFACTS DETECTED
+
+--- mut_orc_strip.exe  (gc:orc + -d:strip) ---
+  Strip-Resistant hits  : 8  (same set as above)
+  YARA/Structural score : 35/100
+  LAYER 5 — Deep Analysis:
+    CFG nodes           : 1,256
+    GIN  (CFG graph)    : 5/15   [ORC GC back-edge loop]
+    BERT (next-byte LM) : 10/10  [highest Nim byte confidence]
+    ACD  (anomaly)      : 5/5    [ACD=22,026,166]
+    LIME explanation    : NimMain hierarchy | Call density | Entropy
+    DEEP SCORE          : 20/30
+    COMBINED SCORE      : 55/100  ✅ DETECTED
+  Verdict               : SUSPICIOUS NIM ARTIFACTS DETECTED
+
+--- mut_arc_sz_strip.exe  (gc:arc + --opt:size + -d:strip) ---
+  Strip-Resistant hits  : 8  (same set)
+  YARA/Structural score : 36/100
+  LAYER 5 — Deep Analysis:
+    CFG nodes           : 1,308
+    GIN  (CFG graph)    : 5/15   [ORC GC back-edge loop]
+    BERT (next-byte LM) : 6/10   [size-opt changes byte patterns slightly]
+    ACD  (anomaly)      : 5/5    [ACD=23,202,635]
+    LIME explanation    : NimMain hierarchy | Entropy | Call density
+    DEEP SCORE          : 16/30
+    COMBINED SCORE      : 52/100  ✅ DETECTED
+  Verdict               : SUSPICIOUS NIM ARTIFACTS DETECTED
+
+════════════════════════════════════════════════════════════════════════════════
+SUMMARY TABLE
+════════════════════════════════════════════════════════════════════════════════
+
+Variant               Struct  Deep  Combined  NimHunter v1  NimHunter v2
+--------------------------------------------------------------------
+mut_arc_strip.exe      35/100  19/30  54/100   ❌ MISSED      ✅ DETECTED
+mut_orc_strip.exe      35/100  20/30  55/100   ❌ MISSED      ✅ DETECTED
+mut_arc_sz_strip.exe   36/100  16/30  52/100   ❌ MISSED      ✅ DETECTED
+
+v1 threshold=40, scored≤36 → CLEAN  (0/3 detected)
+v2 threshold=40, combined ≥52      → ALL DETECTED  (3/3)
+
+Layer 5 contribution to strip evasion recovery: +17 to +19 points
+Strip-Resistant component contribution         : +13 to +14 points
+
+════════════════════════════════════════════════════════════════════════════════
+BERT Perplexity (model trained on 9,100-sample corpus)
+════════════════════════════════════════════════════════════════════════════════
+
+  Nim malware perplexity  (mean) :  12.5   (low = distinctive byte pattern)
+  Benign PE perplexity    (mean) :  50.6   (high = different byte distribution)
+  Separation ratio               :   4.0×
+
+  Threshold (< 30 → Nim) correctly classifies:
+    - All  7,218 malware  as Nim
+    - All  1,882 benign   as clean
+
+════════════════════════════════════════════════════════════════════════════════
+ACD ANOMALY BASELINE (fitted on 1,882 benign samples, 9,100-sample model)
+════════════════════════════════════════════════════════════════════════════════
+
+  Feature                 Benign Mean   Benign Std    Interpretation
+  ---------------------------------------------------------------
+  nimMain_ratio              0.0000       0.0000      absent in all C PE files
+  gcMarker_ratio             0.0000       0.0000      absent in all C PE files
+  moduleEnc_ratio            0.0000       0.0000      absent in all C PE files
+  sysFatal_ratio             0.0000       0.0000      absent in all C PE files
+  overall_entropy            0.6795       0.0162      tight benign band
+  section_count_norm         1.7822       0.1506      4-5 sections typical
+  has_tls                    0.9872       0.1122      most benign have TLS
+  ACD threshold (90th pct)   0.0332
+
+  Nim malware ACD scores: 22,026,166 – 23,202,635  (6× 10^8 × threshold)
+  → Nim PE files are extreme outliers vs. the benign distribution

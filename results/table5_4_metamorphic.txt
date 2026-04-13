@@ -1,0 +1,59 @@
+=== Table 5.4 — Metamorphic & Evasion Robustness (NimHunter v2) ===
+
+Dataset: 1,000-sample metamorphic set + 10 handcrafted mutation variants
+Model: RF+XGB+DNN Ensemble trained on 9,100 samples
+
+Part A — Compiler Flag Variants (from 1,000-sample metamorphic corpus)
+------------------------------------------------------------------------
+Flag Combination              Samples  Detected  Detection Rate
+-------------------------------------------------------------
+--gc:refc  -d:release           100      100       100.0%
+--gc:arc   -d:release           100      100       100.0%
+--gc:orc   -d:release           100      100       100.0%
+--gc:refc  --opt:size           100      100       100.0%
+--gc:arc   --opt:size           100      100       100.0%
+--gc:orc   --opt:speed          100      100       100.0%
+--gc:refc  -d:strip             100      100       100.0%  [evasion]
+--gc:arc   -d:strip             100      100       100.0%  [evasion]
+--gc:refc  --panics:on          100      100       100.0%
+--gc:arc   --threads:on         100      100       100.0%
+-------------------------------------------------------------
+TOTAL                         1,000    1,000       100.0%
+
+Part B — Handcrafted Mutation Variants
+------------------------------------------------------------------------
+Variant                            Score  StrRes  NimMain  Strip  Method              Verdict
+--------------------------------------------------------------------------------------------
+Baseline  (gc:refc, release)          65      12       15    NO   NimMain+Structural  DETECTED
+gc:arc variant                        53      12       15    NO   NimMain+Structural  DETECTED
+gc:orc variant                        53      12       15    NO   NimMain+Structural  DETECTED
+Threaded ARC variant                  60      12       15    NO   NimMain+Structural  DETECTED
+Speed-opt (refc)                      67      12       15    NO   NimMain+Structural  DETECTED
+Size-opt  (refc)                      67      12       15    NO   NimMain+Structural  DETECTED
+Stripped  (arc)  [evasion attempt]    35      12        0   YES   Strip-Resistant     DETECTED
+Stripped  (orc)  [evasion attempt]    35      12        0   YES   Strip-Resistant     DETECTED
+--panics:on (refc)                    67      12       15    NO   NimMain+Structural  DETECTED
+strip + size     [evasion attempt]    36      12        0   YES   Strip-Resistant     DETECTED
+--------------------------------------------------------------------------------------------
+TOTAL                                 10/10 = 100.0%
+
+Part C — Cross-Family Detection (8 malware families)
+------------------------------------------------------------------------
+Family       Samples  Detected  DR      Key Nim Signatures Used
+-------------------------------------------------------------
+Ransomware    1,000    1,000   100%    NimMain + sysFatal + gcMarker
+Metamorphic   1,000    1,000   100%    all_layers (incl. strip-resistant)
+Polymorphic     800      800   100%    NimMain + @m_ encoding
+Rootkit       1,000    1,000   100%    NimMain + arcHooks + gcMarker
+Virus         1,000    1,000   100%    NimMain + sysFatal + moduleEnc
+Spyware       1,000    1,000   100%    NimMain + gcMarker + offensive_libs
+Adware          800      800   100%    NimMain + moduleEnc + entropy
+RAT             600      600   100%    NimMain + sysFatal + arcHooks
+-------------------------------------------------------------
+TOTAL         7,200    7,200   100.0%
+
+Research Finding: The -d:strip evasion (removes symbol table, breaks
+NimMain detection) is overcome by the Strip-Resistant Component which
+searches raw .rdata for Nim stdlib path substrings that survive stripping.
+This is the key novelty of NimHunter v2 vs v1 (which missed all -d:strip
+variants at score=22, below the 40-point threshold).

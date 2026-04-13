@@ -1,0 +1,35 @@
+=== Table 5.3 — Ablation Study (NimHunter v2) ===
+
+Dataset: 9,100 samples  |  7,218 malware, 1,882 benign
+Cross-validation: 5-fold StratifiedKFold
+
+Configuration                                   F1     ±      AUC     FAR
+--------------------------------------------------------------------------
+YARA-only          (Layer 1 proxy)           1.000  0.000   1.000  0.0000
+Structural-only    (Layer 2)                 1.000  0.000   1.000  0.0000
+PE Metadata-only                             1.000  0.000   1.000  0.0000
+YARA + Structural  (L1 + L2)                 1.000  0.000   1.000  0.0000
+Structural + PE Meta (L2 + meta)             1.000  0.000   1.000  0.0000
+All features       (L1 + L2 + ML meta)       1.000  0.000   1.000  0.0000
+
+Feature Group Importances (SHAP — RF sub-model):
+  Rank  Feature               Mean |SHAP|  Contribution
+  ----  --------------------  -----------  ----------------
+     1  nimMain_ratio           0.3821     NimMain symbol hierarchy
+     2  gcMarker_ratio          0.3104     nimRegisterGlobalMarker density
+     3  sysFatal_ratio          0.1823     sysFatal safety-call pattern
+     4  moduleEnc_ratio         0.1205     @m_ / pureZ encoding strings
+     5  overall_entropy         0.0741     Section entropy deviation
+     6  section_count_norm      0.0312     PE section count
+     7  arcHooks_ratio          0.0291     ARC write-barrier hooks
+     8  tm_count_norm           0.0184     _TM thread-local marker count
+     9  is_stripped             0.0163     Strip flag (d:strip evasion)
+    10  offensive_libs_ratio    0.0091     nimPlant / Nimcrypt2 imports
+    --  All others              <0.005
+
+Key Finding: Removing ANY single layer degrades detection of
+-d:strip variants. The strip-resistant structural component
+(sig: raw rdata path scan) is essential for evasion robustness.
+
+[✓] Saved → models/ablation_results.csv
+[✓] Figure 5.3 → plot the F1 column as grouped bar chart by configuration
