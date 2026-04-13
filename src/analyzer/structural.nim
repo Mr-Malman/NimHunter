@@ -34,8 +34,11 @@ type
     callDensity*:        DetectionComponent  ## max 5
     ## Layer 3: Behavioral (Libraries)
     offensiveLibs*:      DetectionComponent  ## max 10
+    ## Layer 2c: Strip-Resistant Runtime Strings (new)
+    stripResistant*:     DetectionComponent  ## max 12
     ## Summary
     gcMode*:             GCMode
+    isStripped*:         bool   ## true when NimMain absent but strip-resistant signals found
     totalScore*:         int    ## 0-100 (structural + behavioral, YARA added by caller)
     allFindings*:        seq[string]
     ## Feature vector for ML engine
@@ -45,6 +48,21 @@ type
 
 proc hasStr(buf: string, s: string): bool {.inline.} =
   buf.find(s) >= 0
+
+proc hasBytesStr*(buf: seq[byte], needle: string): bool =
+  ## Search the raw byte buffer for 'needle' — immune to null-byte truncation.
+  ## When buf is cast to string, internal \x00 bytes end the string early.
+  ## This proc searches all bytes including NUL bytes.
+  let n = needle.len
+  if n == 0 or buf.len < n: return false
+  for i in 0 .. buf.len - n:
+    var match = true
+    for j in 0 ..< n:
+      if buf[i + j] != byte(needle[j]):
+        match = false
+        break
+    if match: return true
+  return false
 
 proc countStr(buf: string, s: string): int =
   result = 0
@@ -353,7 +371,57 @@ proc detectOffensiveLibraries*(buf: string): DetectionComponent =
   
   result.score = min(result.score, result.maxScore)
 
-# ─── GC Mode Discriminator ───────────────────────────────────────────────────
+# ─── Component 11: Strip-Resistant Runtime String Detection ─────────────────
+
+proc detectStripResistant*(rawBuf: seq[byte]): DetectionComponent =
+  ## Nim runtime embeds error strings in .rdata that SURVIVE -d:strip.
+  ## stripping only removes the SYMBOL TABLE (names), NOT string literals.
+  ## These signatures are provably Nim-only — no standard C runtime emits them.
+  ## Uses raw byte search to avoid null-byte truncation of cast[string].
+  ## Max score: 12 pts — designed to lift stripped binaries above the 40pt threshold.
+  result = makeComp("Strip-Resistant Runtime Strings", 12)
+
+  template has(s: string): bool = hasBytesStr(rawBuf, s)
+
+  # Tier 1 (+4 each): Highly unique to Nim, absent from MSVC/MinGW/Go/Rust
+  if has("IndexDefect"):
+    result.score += 4
+    result.findings.add("[STRIP-RES] IndexDefect: Nim-specific exception type in .rdata")
+
+  if has("fatal.nim"):
+    result.score += 4
+    result.findings.add("[STRIP-RES] fatal.nim: Nim stdlib source path embedded in binary")
+
+  if has("system.nim"):
+    result.score += 3
+    result.findings.add("[STRIP-RES] system.nim: Nim stdlib path — compiler-injected string")
+
+  # Tier 2 (+3): Present in Nim, rare in other toolchains
+  if has("IOError") and has("syncio.nim"):
+    result.score += 3
+    result.findings.add("[STRIP-RES] IOError + syncio.nim: Nim I/O exception pair")
+
+  if has("OverflowDefect") or has("OverflowError"):
+    result.score += 2
+    result.findings.add("[STRIP-RES] OverflowDefect/Error: Nim-specific integer overflow type")
+
+  if has("OutOfMemError") or (has("Defect") and has("fatal.nim")):
+    result.score += 1
+    result.findings.add("[STRIP-RES] Nim Defect hierarchy detected")
+
+  # Tier 3: Nim-emitted OS signal strings
+  if has("SIGSEGV: Illegal storage access"):
+    result.score += 2
+    result.findings.add("[STRIP-RES] Nim SIGSEGV string: runtime safety message")
+
+  if has("cmdline.nim"):
+    result.score += 1
+    result.findings.add("[STRIP-RES] cmdline.nim: Nim CLI runtime path")
+
+  if result.score >= 4:
+    result.findings.add("[HIGH] Strip-resistant Nim strings confirmed — binary is Nim even when stripped")
+
+  result.score = min(result.score, result.maxScore)
 
 proc discriminateGCMode*(buf: string): GCMode =
   ## Determine the GC mode used to compile the binary.
@@ -375,8 +443,11 @@ proc discriminateGCMode*(buf: string): GCMode =
 proc buildFeatureVector*(res: DetectionResult, peInfo: PEInfo): seq[float] =
   ## Produces a normalized feature vector for the ML ensemble classifier.
   ## Features are normalized to [0, 1] range for model compatibility.
+  ## NOTE: stripResistant score is folded into nimMain_ratio for model compatibility.
   result = @[
-    float(res.nimMainHierarchy.score)   / float(res.nimMainHierarchy.maxScore),
+    # nimMain_ratio — boosted by strip-resistant score when symbols absent
+    float(res.nimMainHierarchy.score + res.stripResistant.score) /
+      float(res.nimMainHierarchy.maxScore + res.stripResistant.maxScore),
     float(res.gcMarkerClustering.score) / float(res.gcMarkerClustering.maxScore),
     float(res.moduleEncoding.score)     / float(res.moduleEncoding.maxScore),
     float(res.tmStrings.score)          / float(res.tmStrings.maxScore),
@@ -399,7 +470,7 @@ proc buildFeatureVector*(res: DetectionResult, peInfo: PEInfo): seq[float] =
 proc analyzeCallCascade*(buffer: seq[byte], entryPoint: uint32,
                          peInfo: PEInfo): DetectionResult =
   ## Primary structural analysis entry point.
-  ## Runs all 10 detection components and produces a structured result.
+  ## Runs all 11 detection components and produces a structured result.
   var res = DetectionResult()
   let buf = cast[string](buffer)
 
@@ -413,7 +484,12 @@ proc analyzeCallCascade*(buffer: seq[byte], entryPoint: uint32,
   res.foreignThreadGC    = detectForeignThreadGC(buf)
   res.callDensity        = detectCallDensity(buf)
   res.offensiveLibs      = detectOffensiveLibraries(buf)
+  res.stripResistant     = detectStripResistant(buffer)   ## <-- raw bytes, bypasses null truncation
   res.gcMode             = discriminateGCMode(buf)
+
+  # Mark as stripped when NimMain symbols absent but runtime strings present
+  res.isStripped = (res.nimMainHierarchy.score == 0) and
+                   (res.stripResistant.score >= 4)
 
   res.totalScore =
     res.nimMainHierarchy.score   +
@@ -425,14 +501,15 @@ proc analyzeCallCascade*(buffer: seq[byte], entryPoint: uint32,
     res.arcHooks.score           +
     res.foreignThreadGC.score    +
     res.callDensity.score        +
-    res.offensiveLibs.score
+    res.offensiveLibs.score      +
+    res.stripResistant.score     ## Strip-resistant adds up to 12 pts
 
   res.totalScore = min(res.totalScore, 75) # YARA layer adds up to 25 more
 
   for c in [res.nimMainHierarchy, res.gcMarkerClustering, res.moduleEncoding,
             res.tmStrings, res.sysFatalRefs, res.orcTricolorMotif,
             res.arcHooks, res.foreignThreadGC, res.callDensity,
-            res.offensiveLibs]:
+            res.offensiveLibs, res.stripResistant]:
     for f in c.findings:
       res.allFindings.add(f)
 

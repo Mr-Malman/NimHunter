@@ -110,53 +110,106 @@ proc runMLEngine*(structRes: DetectionResult, peInfo: PEInfo): MLResult =
 const TRAINER_SCRIPT* = """
 #!/usr/bin/env python3
 # scripts/train_model.py — NimHunter ML engine trainer
-# Requirements: pip install scikit-learn xgboost onnx skl2onnx pandas numpy shap
+#
+# Requirements:
+#   pip install scikit-learn xgboost onnx skl2onnx pandas numpy shap matplotlib
+#
+# Usage:
+#   1. Add Nim malware PE files to  data/samples/malware/  (label=1)
+#      Add benign PE files to       data/samples/benign/   (label=0)
+#   2. python3 scripts/extract_features.py  -> data/features.csv
+#   3. python3 scripts/train_model.py       -> models/nimhunter.onnx
+#
+# Dataset sources:
+#   Malware: bazaar.abuse.ch (tag:nim), vx-underground.org, theZoo
+#   Benign:  EMBER dataset (github.com/elastic/ember), Windows system DLLs
 
+import sys, os
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import StratifiedKFold, cross_validate
-from sklearn.metrics import cohen_kappa_score, f1_score
+from sklearn.metrics import classification_report
 from xgboost import XGBClassifier
 from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType
-import shap, joblib, os
+import shap, joblib
 
+# All 17 features — must match FEATURE_NAMES in ml_engine.nim
 FEATURE_NAMES = [
     "nimMain_ratio", "gcMarker_ratio", "moduleEnc_ratio", "tmStrings_ratio",
     "sysFatal_ratio", "orcMotif_ratio", "arcHooks_ratio", "foreignGC_ratio",
     "callDensity_ratio", "overall_entropy", "tm_count_norm", "section_count_norm",
-    "has_tls", "is_packed", "is_stripped", "gc_mode_norm"
+    "has_tls", "is_packed", "is_stripped", "gc_mode_norm",
+    "offensive_libs_ratio"   # <-- FIX: was missing, now 17 features total
 ]
 
-df = pd.read_csv("data/features.csv")
+assert len(FEATURE_NAMES) == 17
+
+CSV_PATH = "data/features.csv"
+if not os.path.exists(CSV_PATH):
+    print(f"[!] {CSV_PATH} not found. Run scripts/extract_features.py first.")
+    sys.exit(1)
+
+df = pd.read_csv(CSV_PATH)
 X = df[FEATURE_NAMES].values.astype(np.float32)
 y = df["label"].values  # 0=benign, 1=nim_malware
 
-rf  = RandomForestClassifier(n_estimators=200, class_weight="balanced", random_state=42)
-xgb = XGBClassifier(scale_pos_weight=(y==0).sum()/(y==1).sum(), eval_metric="logloss")
-dnn = MLPClassifier(hidden_layer_sizes=(128, 64, 32), max_iter=500, random_state=42)
+print(f"[*] {len(df)} samples: {(y==1).sum()} malware, {(y==0).sum()} benign")
 
-ensemble = VotingClassifier([("rf", rf), ("xgb", xgb), ("dnn", dnn)], voting="soft")
+if len(np.unique(y)) < 2:
+    print("[!] Dataset needs both label=0 (benign) and label=1 (malware) rows.")
+    sys.exit(1)
 
+pos_weight = max((y==0).sum() / max((y==1).sum(), 1), 1.0)
+rf  = RandomForestClassifier(n_estimators=200, class_weight="balanced",
+                              max_depth=12, random_state=42, n_jobs=-1)
+xgb = XGBClassifier(scale_pos_weight=pos_weight, eval_metric="logloss",
+                     n_estimators=200, max_depth=8, random_state=42, verbosity=0)
+dnn = MLPClassifier(hidden_layer_sizes=(128, 64, 32), max_iter=500,
+                    random_state=42, early_stopping=True)
+
+ensemble = VotingClassifier(estimators=[("rf",rf),("xgb",xgb),("dnn",dnn)], voting="soft")
+
+print("[*] Cross-validating...")
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-scores = cross_validate(ensemble, X, y, cv=cv, scoring=["f1", "roc_auc"])
-print(f"F1:  {scores['test_f1'].mean():.3f} ± {scores['test_f1'].std():.3f}")
-print(f"AUC: {scores['test_roc_auc'].mean():.3f}")
+scores = cross_validate(ensemble, X, y, cv=cv, scoring=["f1","roc_auc"])
+print(f"    F1  = {scores['test_f1'].mean():.3f} +/- {scores['test_f1'].std():.3f}")
+print(f"    AUC = {scores['test_roc_auc'].mean():.3f}")
 
 ensemble.fit(X, y)
+print(classification_report(y, ensemble.predict(X), target_names=["benign","nim_malware"]))
 
-# SHAP explainability
-explainer = shap.TreeExplainer(ensemble.estimators_[0])
-shap_values = explainer.shap_values(X)
-shap.summary_plot(shap_values[1], X, feature_names=FEATURE_NAMES)
+# FIX: SHAP on RF sub-model only — VotingClassifier is not TreeExplainer-compatible
+try:
+    import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+    rf_fit = ensemble.named_estimators_["rf"]
+    sv = shap.TreeExplainer(rf_fit).shap_values(X)
+    sv = sv[1] if isinstance(sv, list) else sv
+    shap.summary_plot(sv, X, feature_names=FEATURE_NAMES, show=False)
+    plt.tight_layout()
+    os.makedirs("models", exist_ok=True)
+    plt.savefig("models/shap_summary.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print("[*] SHAP plot -> models/shap_summary.png")
+except Exception as e:
+    print(f"[!] SHAP skipped: {e}")
 
-# Export to ONNX
-initial_type = [("float_input", FloatTensorType([None, len(FEATURE_NAMES)]))]
-onnx_model = convert_sklearn(ensemble, initial_types=initial_type)
 os.makedirs("models", exist_ok=True)
-with open("models/nimhunter.onnx", "wb") as f:
-    f.write(onnx_model.SerializeToString())
-print("Model saved: models/nimhunter.onnx")
+joblib.dump(ensemble, "models/nimhunter_ensemble.joblib")
+print("[✓] Ensemble -> models/nimhunter_ensemble.joblib")
+
+# FIX: Export RF sub-model to ONNX — skl2onnx does not support VotingClassifier
+try:
+    rf_fit = ensemble.named_estimators_["rf"]
+    onnx_model = convert_sklearn(rf_fit,
+        initial_types=[("float_input", FloatTensorType([None, len(FEATURE_NAMES)]))],
+        target_opset=17, options={id(rf_fit): {"zipmap": False}})
+    with open("models/nimhunter.onnx", "wb") as f:
+        f.write(onnx_model.SerializeToString())
+    print("[✓] ONNX -> models/nimhunter.onnx  (auto-loaded by NimHunter on next scan)")
+except Exception as e:
+    print(f"[!] ONNX export failed: {e}")
+    print("    Joblib model still usable for Python evaluation.")
 """

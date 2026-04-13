@@ -38,16 +38,28 @@ type
     polyReport*:   PolyMetaReport
     mlResult*:     MLResult
     totalScore*:   int
+    deepScore*:    int    ## 0-30 pts from GIN+BERT+ACD when --deep is used
     verdict*:      VerdictLevel
 
-proc calcVerdict(score: int): VerdictLevel =
-  if score >= 90:  verdictDefinitive
-  elif score >= 70: verdictHigh
-  elif score >= 40: verdictSuspicious
-  else:             verdictClean
+proc calcVerdict(score: int, deepScore: int = 0, isStripped: bool = false): VerdictLevel =
+  ## Multi-layer verdict calculation.
+  ## - base score (0-100) from YARA + structural + ML
+  ## - deepScore (0-30): added when --deep is active (GIN+BERT+ACD)
+  ## - isStripped: when true, threshold drops from 40→30 because strip-resistant
+  ##   evidence compensates for absent symbol-table signals
+  let combined = if deepScore > 0:
+    min(100, score + int(deepScore.float * 0.9))
+  else:
+    score
+  let threshold = if isStripped: 30 else: 40  ## strip-resistant lowers threshold
+  if combined >= 90:            verdictDefinitive
+  elif combined >= 70:           verdictHigh
+  elif combined >= threshold:    verdictSuspicious
+  else:                          verdictClean
 
 proc buildReport*(filePath: string, peInfo: PEInfo, yaraResult: YaraResult,
-                  structResult: DetectionResult, mlResult: MLResult, polyReport: PolyMetaReport): FullReport =
+                  structResult: DetectionResult, mlResult: MLResult,
+                  polyReport: PolyMetaReport, deepScore: int = 0): FullReport =
   let totalScore = min(yaraResult.score + structResult.totalScore + mlResult.score, 100)
   FullReport(
     filePath:     filePath,
@@ -58,7 +70,8 @@ proc buildReport*(filePath: string, peInfo: PEInfo, yaraResult: YaraResult,
     polyReport:   polyReport,
     mlResult:     mlResult,
     totalScore:   totalScore,
-    verdict:      calcVerdict(totalScore)
+    deepScore:    deepScore,
+    verdict:      calcVerdict(totalScore, deepScore, structResult.isStripped)
   )
 
 # ─── Plain text report ────────────────────────────────────────────────────────
@@ -115,16 +128,19 @@ proc printReport*(r: FullReport) =
                r.structResult.arcHooks,
                r.structResult.foreignThreadGC,
                r.structResult.callDensity,
-               r.structResult.offensiveLibs]:
+               r.structResult.offensiveLibs,
+               r.structResult.stripResistant]:   ## <-- Component 11
     if comp.score > 0:
       echo &"  [{comp.score:2}/{comp.maxScore}] {comp.name}"
       for f in comp.findings:
-        if f.startsWith("[HIGH]"):
+        if f.startsWith("[HIGH]") or f.startsWith("[STRIP-RES]"):
           echo colorize("         → " & f, cRed)
         elif f.contains("Offensive library"):
           echo colorize("         → " & f, cYellow)
         else:
           echo &"         → {f}"
+  if r.structResult.isStripped:
+    echo colorize("  [!] Binary is stripped — NimMain symbols absent, runtime strings confirm Nim", cYellow)
   echo &"  Structural score: +{r.structResult.totalScore}/75"
   echo ""
 
@@ -219,6 +235,8 @@ proc toJson*(r: FullReport): string =
   j &= &"      \"arc_hooks\": {compJson(r.structResult.arcHooks)},\n"
   j &= &"      \"foreign_thread_gc\": {compJson(r.structResult.foreignThreadGC)},\n"
   j &= &"      \"call_density\": {compJson(r.structResult.callDensity)},\n"
+  j &= &"      \"strip_resistant\": {compJson(r.structResult.stripResistant)},\n"
+  j &= &"      \"is_stripped\": {r.structResult.isStripped},\n"
   j &= &"      \"total\": {r.structResult.totalScore}\n"
   j &= "    },\n"
   j &= &"    \"ml_layer\": {{\"score\": {r.mlResult.score}, \"confidence\": {r.mlResult.confidence:.3f}}}\n"

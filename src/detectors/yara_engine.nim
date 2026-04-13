@@ -11,14 +11,28 @@ type
     ruleNames*:   seq[string]
     score*:       int    ## 0-25 contribution to total score
 
-proc yaraAvailable(): bool =
-  ## Check if the yara binary is on PATH (cross-platform)
+proc findYaraBin(): string =
+  ## Locate the yara binary — checks PATH and common install locations.
+  ## Returns full path if found, empty string otherwise.
   when defined(windows):
-    let (_, code) = execCmdEx("where yara 2>nul")
-    result = (code == 0)
+    let (output, code) = execCmdEx("where yara 2>nul")
+    if code == 0: return output.strip()
+    return ""
   else:
-    let (_, code) = execCmdEx("which yara 2>/dev/null")
-    result = (code == 0)
+    # 1. Try PATH first
+    let (output, code) = execCmdEx("which yara 2>/dev/null")
+    if code == 0: return output.strip()
+    # 2. Probe common install locations (covers Homebrew, system, apt)
+    const candidates = [
+      "/opt/homebrew/bin/yara",   # Apple Silicon Homebrew
+      "/usr/local/bin/yara",      # Intel Homebrew / manual install
+      "/usr/bin/yara",            # apt / system
+      "/usr/local/sbin/yara",
+    ]
+    for c in candidates:
+      let (_, rc) = execCmdEx("test -x \"" & c & "\"")
+      if rc == 0: return c
+    return ""
 
 proc scanWithYara*(filePath: string, rulesPath: string): YaraResult =
   ## Scan file with YARA rules. Returns structured match results.
@@ -29,8 +43,9 @@ proc scanWithYara*(filePath: string, rulesPath: string): YaraResult =
     echo "[!] YARA: Target file not found"
     return
 
-  # Verify YARA binary is available (cross-platform)
-  if not yaraAvailable():
+  # Locate yara binary — checks PATH and common Homebrew/system dirs
+  let yaraBin = findYaraBin()
+  if yaraBin == "":
     echo "[!] YARA: yara binary not found — install with:"
     when defined(windows):
       echo "         choco install yara  OR  scoop install yara"
@@ -45,8 +60,8 @@ proc scanWithYara*(filePath: string, rulesPath: string): YaraResult =
   # Cross-platform redirect
   const devNull = when defined(windows): " 2>nul" else: " 2>/dev/null"
 
-  # Run YARA against the main rules file
-  let cmd = "yara -r \"" & rulesPath & "\" \"" & filePath & "\"" & devNull
+  # Run YARA against the main rules file (use full path)
+  let cmd = "\"" & yaraBin & "\" -r \"" & rulesPath & "\" \"" & filePath & "\"" & devNull
   let (output, _) = execCmdEx(cmd)
 
   # Scan additional .yar files in signatures/ subdirectory
@@ -55,7 +70,7 @@ proc scanWithYara*(filePath: string, rulesPath: string): YaraResult =
   if dirExists(sigDir):
     for entry in walkDir(sigDir):
       if entry.path.endsWith(".yar") or entry.path.endsWith(".yara"):
-        let (so, _) = execCmdEx("yara \"" & entry.path & "\" \"" & filePath & "\"" & devNull)
+        let (so, _) = execCmdEx("\"" & yaraBin & "\" \"" & entry.path & "\" \"" & filePath & "\"" & devNull)
         sigOutput.add(so)
 
   let combined = output & sigOutput
