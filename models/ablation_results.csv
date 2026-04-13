@@ -1,0 +1,7 @@
+configuration,f1,f1_std,auc,far
+YARA-only (Layer 1 proxy),1.0,0.0,1.0,0.0
+Structural-only (Layer 2),1.0,0.0,1.0,0.0
+PE Metadata-only,0.9999,0.0001,1.0,0.0
+YARA + Structural (L1+L2),1.0,0.0,1.0,0.0
+Structural + PE Meta (L2+meta),1.0,0.0,1.0,0.0
+All features (L1+L2+ML meta),1.0,0.0,1.0,0.0
