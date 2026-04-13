@@ -1,0 +1,27 @@
+{
+  "name": "demo_nimhunter",
+  "version": "1.0.0",
+  "description": "> **Detect Nim-compiled malware through compiler-mandated structural invariants that survive polymorphism and metamorphism.**",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mr-Malman/NimHunter.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Mr-Malman/NimHunter/issues"
+  },
+  "homepage": "https://github.com/Mr-Malman/NimHunter#readme",
+  "dependencies": {
+    "docx": "^9.6.1"
+  }
+}

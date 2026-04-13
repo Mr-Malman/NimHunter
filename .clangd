@@ -1,0 +1,10 @@
+CompileFlags:
+  Add:
+    # Homebrew YARA headers (Apple Silicon)
+    - -I/opt/homebrew/include
+    # Homebrew YARA headers (Intel Mac)
+    - -I/usr/local/include
+    # Local nimyara stub headers
+    - -I${workspaceFolder}/libs/nimyara
+  Remove:
+    - -W*

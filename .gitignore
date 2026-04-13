@@ -4,3 +4,22 @@ nimcache/
 # Generated binary
 nimhunter
 nimhunter.exe
+
+# Python virtual environment
+.venv/
+
+# Trained ML models (regenerate with scripts/train_model.py)
+models/nimhunter_ensemble.joblib
+models/shap_summary.png
+
+# Generated dataset (regenerate with extract_features.py)
+data/features.csv
+
+# Malware / benign sample binaries (never commit these)
+data/samples/malware/
+data/samples/benign/
+
+# Stray markdown files
+nimhunter.md
+ROADMAP.md
+data/SAMPLES.md.bazaar_api_key
